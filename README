@@ -1,0 +1,7 @@
+HPC concerned C/C++ codes are presented.
+
+- ./cuda/matrix_multi.cu:
+  Three (3) matrix multiplication algorithms were implemented, and performance was compared.
+  1. Intuitive implementation of matrix multiplication with cuda.
+  2. Improved implementation of matrix multiplication with cuda, using shared memory and tiling.
+  3. Call of cuBlas function cublasSgemm
