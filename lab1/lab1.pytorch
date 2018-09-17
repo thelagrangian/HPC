@@ -1,0 +1,292 @@
+from __future__ import print_function, division
+import os
+import torch
+import pandas as pd
+##from skimage import io, transform
+from PIL import Image
+import numpy as np
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+from torchvision import utils
+import time
+from torch.autograd import Variable
+import torch.nn.functional as F
+
+
+class lab1Dataset(Dataset):
+
+    def __init__(self, csv_file, img_dir,transform=None):
+        self.tag = pd.read_csv(csv_file)
+        self.img_dir   = img_dir
+        self.transform = transform
+
+
+    def __len__(self):
+        return len(self.tag)
+
+
+    def __getitem__(self,i):
+        img_name = os.path.join(self.img_dir,self.tag.iloc[i,0]) + '.jpg'
+
+        start0 = time.time()
+        ##image = io.imread(img_name)
+        with open(img_name,'rb') as f:
+            image = Image.open(f)
+            image = image.convert('RGB')
+        end0 = time.time()
+        t0 = end0 - start0
+
+        start1 = time.time()
+        if self.transform:
+            transformed = self.transform(image)
+        end1 =time.time()
+        t1 = end1 - start1
+
+        return { 'image': transformed, 'tag': self.tag.iloc[i,1],'t0':t0, 't1': t1 }
+
+
+class Net(torch.nn.Module):
+    def __init__(self, n_feature, n_hidden1, n_hidden2, n_output):
+        super(Net, self).__init__()
+        self.fc1 = torch.nn.Linear(n_feature, n_hidden1)
+        self.fc2 = torch.nn.Linear(n_hidden1,n_hidden2)
+        self.fc3 = torch.nn.Linear(n_hidden2,n_output)
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = F.softmax(self.fc3(x),dim=0)
+        return x
+
+def main():
+
+    minibatch = 100
+    num_epoch = 5
+    num_epoch2=10
+    trans = transforms.Compose([transforms.Resize(32),transforms.ToTensor()])
+
+    io_time_spent = 0.0
+    aug_time_spent= 0.0
+
+
+    train_set = lab1Dataset(csv_file='/scratch/am9031/CSCI-GA.3033-023/kaggleamazon/train.csv',
+                            img_dir ='/scratch/am9031/CSCI-GA.3033-023/kaggleamazon/train-jpg/',
+                            transform=trans)
+
+    ####C6 C7
+    train_loader = DataLoader(train_set, batch_size=minibatch, num_workers=1)
+
+
+    net = Net(n_feature=3072, n_hidden1=1024, n_hidden2=256, n_output=17)
+    criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
+
+
+    train_loader_end = 0.0
+    train_loader_spent = 0.0
+
+    train_5_epoch_start =time.time()
+    train_loader_start = train_5_epoch_start
+    for epoch in range(num_epoch):
+        for i, data in enumerate(train_loader):
+            train_loader_end = time.time()
+            train_loader_spent = train_loader_spent + (train_loader_end - train_loader_start)
+            x = data['image']
+            z = data['tag']
+            io_time_spent = io_time_spent + torch.sum(data['t0'])
+            aug_time_spent =aug_time_spent + torch.sum(data['t1'])
+            x = x.view(minibatch,-1)
+            x, z = Variable(x), Variable(z)
+            optimizer.zero_grad()
+            outputs = net(x)
+            loss = criterion(outputs, z)
+            loss.backward()
+            optimizer.step()
+            train_loader_start = time.time()
+
+    train_5_epoch_end = time.time()
+    train_5_epoch_spent = train_5_epoch_end - train_5_epoch_start
+
+
+    print("C6 and C7:")
+    print("pytorch CPU's aggregated I/O time: %f secs" %io_time_spent)
+    print("pytorch CPU's aggregated data augmentation time: %f secs" %aug_time_spent)
+    print("pytorch CPU's aggregated batch loading time: %f secs" %train_loader_spent)
+    print("pytorch CPU's training time for 5 epochs: %f secs" %train_5_epoch_spent)
+
+
+
+    ####C8
+    train_loader_times = np.full((3,20), 0.0)
+    for workers in range(20):
+        train_loader = DataLoader(train_set, batch_size=minibatch, num_workers=workers)
+        train_loader_start = time.time()
+        for i, data in enumerate(train_loader):
+            x = data['image']
+            train_loader_times[2,workers] += float(x.size()[0])
+        train_loader_end = time.time()
+        train_loader_times[0,workers] = workers
+        train_loader_times[1,workers] = train_loader_end - train_loader_start
+        ##train_loader_times[2,workers] = x.size()[0]
+
+    print("C8:")
+    print(train_loader_times)
+
+
+    '''
+    #### C9: From C8, I selected 8 workers for C9.
+    #### CPU calculation:
+    train_loader = DataLoader(train_set, batch_size=minibatch, num_workers=8)
+
+
+    net1 = Net(n_feature=3072, n_hidden1=1024, n_hidden2=256, n_output=17)
+    net2 = Net(n_feature=3072, n_hidden1=1024, n_hidden2=256, n_output=17)
+    net3 = Net(n_feature=3072, n_hidden1=1024, n_hidden2=256, n_output=17)
+    criterion = torch.nn.CrossEntropyLoss()
+
+    optimizer1 = torch.optim.SGD(net1.parameters(), lr=0.01, momentum=0.0)
+    optimizer2 = torch.optim.SGD(net2.parameters(), lr=0.01, momentum=0.9)
+    optimizer3 =torch.optim.Adam(net3.parameters(), lr=0.01)
+
+    train_10_epoch_sgd1_cpu_spent = 0.0
+    train_10_epoch_sgd2_cpu_spent = 0.0
+    train_10_epoch_adam_cpu_spent = 0.0
+
+    train_10_epoch_start =time.time()
+    for epoch in range(num_epoch2):
+        for i, data in enumerate(train_loader):
+            x = data['image']
+            z = data['tag']
+            x = x.view(minibatch,-1)
+            x, z = Variable(x), Variable(z)
+            optimizer1.zero_grad()
+            outputs = net1(x)
+            loss = criterion(outputs, z)
+            loss.backward()
+            optimizer1.step()
+    train_10_epoch_end = time.time()
+    train_10_epoch_sgd1_cpu_spent += train_10_epoch_end - train_10_epoch_start
+
+    train_10_epoch_start =time.time()
+    for epoch in range(num_epoch2):
+        for i, data in enumerate(train_loader):
+            x = data['image']
+            z = data['tag']
+            x = x.view(minibatch,-1)
+            x, z = Variable(x), Variable(z)
+            optimizer2.zero_grad()
+            outputs = net2(x)
+            loss = criterion(outputs, z)
+            loss.backward()
+            optimizer2.step()
+    train_10_epoch_end = time.time()
+    train_10_epoch_sgd2_cpu_spent += train_10_epoch_end - train_10_epoch_start
+
+    train_10_epoch_start =time.time()
+    for epoch in range(num_epoch2):
+        for i, data in enumerate(train_loader):
+            x = data['image']
+            z = data['tag']
+            x = x.view(minibatch,-1)
+            x, z = Variable(x), Variable(z)
+            optimizer3.zero_grad()
+            outputs = net3(x)
+            loss = criterion(outputs, z)
+            loss.backward()
+            optimizer3.step()
+    train_10_epoch_end = time.time()
+    train_10_epoch_adam_cpu_spent += train_10_epoch_end - train_10_epoch_start
+
+
+    print("C9: CPU training measures")
+    print("Average time over 10 epochs using SGD: %f" %(train_10_epoch_sgd1_cpu_spent/10.0))
+    print("Average time over 10 epochs using SGD with momentum: %f" %(train_10_epoch_sgd2_cpu_spent/10.0))
+    print("Average time over 10 epochs using Adam: %f" %(train_10_epoch_adam_cpu_spent/10.0))
+
+
+    #### GPU calculation:
+    net1_gpu = Net(n_feature=3072, n_hidden1=1024, n_hidden2=256, n_output=17)
+    net2_gpu = Net(n_feature=3072, n_hidden1=1024, n_hidden2=256, n_output=17)
+    net3_gpu = Net(n_feature=3072, n_hidden1=1024, n_hidden2=256, n_output=17)
+    if torch.cuda.device_count()>1:
+        net1_gpu = torch.nn.DataParallel(net1_gpu)
+        net2_gpu = torch.nn.DataParallel(net2_gpu)
+        net3_gpu = torch.nn.DataParallel(net3_gpu)
+
+    if torch.cuda.is_available():
+        net1_gpu.cuda()
+        net2_gpu.cuda()
+        net3_gpu.cuda()
+
+    criterion = torch.nn.CrossEntropyLoss()
+
+    optimizer1 = torch.optim.SGD(net1_gpu.parameters(), lr=0.01, momentum=0.0)
+    optimizer2 = torch.optim.SGD(net2_gpu.parameters(), lr=0.01, momentum=0.9)
+    optimizer3 =torch.optim.Adam(net3_gpu.parameters(), lr=0.01)
+
+    train_10_epoch_sgd1_gpu_spent = 0.0
+    train_10_epoch_sgd2_gpu_spent = 0.0
+    train_10_epoch_adam_gpu_spent = 0.0
+
+    train_10_epoch_start =time.time()
+    for epoch in range(num_epoch2):
+        for i, data in enumerate(train_loader):
+            if torch.cuda.is_available():
+                x = Variable(data['image'].view(minibatch,-1).cuda())
+                z = Variable(data['tag'].cuda())
+            else:
+                x = Variable(data['image'].view(minibatch,-1))
+                z = Variable(data['tag'])
+            optimizer1.zero_grad()
+            outputs = net1_gpu(x)
+            loss = criterion(outputs, z)
+            loss.backward()
+            optimizer1.step()
+    train_10_epoch_end = time.time()
+    train_10_epoch_sgd1_gpu_spent += train_10_epoch_end - train_10_epoch_start
+
+    train_10_epoch_start =time.time()
+    for epoch in range(num_epoch2):
+        for i, data in enumerate(train_loader):
+            if torch.cuda.is_available():
+                x = Variable(data['image'].view(minibatch,-1).cuda())
+                z = Variable(data['tag'].cuda())
+            else:
+                x = Variable(data['image'].view(minibatch,-1))
+                z = Variable(data['tag'])
+            optimizer2.zero_grad()
+            outputs = net2_gpu(x)
+            loss = criterion(outputs, z)
+            loss.backward()
+            optimizer2.step()
+    train_10_epoch_end = time.time()
+    train_10_epoch_sgd2_gpu_spent += train_10_epoch_end - train_10_epoch_start
+
+    train_10_epoch_start =time.time()
+    for epoch in range(num_epoch2):
+        for i, data in enumerate(train_loader):
+            if torch.cuda.is_available():
+                x = Variable(data['image'].view(minibatch,-1).cuda())
+                z = Variable(data['tag'].cuda())
+            else:
+                x = Variable(data['image'].view(minibatch,-1))
+                z = Variable(data['tag'])
+            optimizer3.zero_grad()
+            outputs = net3_gpu(x)
+            loss = criterion(outputs, z)
+            loss.backward()
+            optimizer3.step()
+    train_10_epoch_end = time.time()
+    train_10_epoch_adam_gpu_spent += train_10_epoch_end - train_10_epoch_start
+
+
+    print("C9: GPU training measures")
+    print("Average time over 10 epochs using SGD: %f" %(train_10_epoch_sgd1_gpu_spent/10.0))
+    print("Average time over 10 epochs using SGD with momentum: %f" %(train_10_epoch_sgd2_gpu_spent/10.0))
+    print("Average time over 10 epochs using Adam: %f" %(train_10_epoch_adam_gpu_spent/10.0))
+    '''
+
+
+
+if __name__ == "__main__":
+    main()
